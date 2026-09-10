@@ -167,6 +167,67 @@ func TestStaleConnectIgnored(t *testing.T) {
 	}
 }
 
+func sessionModel(width, height int) Model {
+	m := New(Config{Host: "127.0.0.1", Port: 25575, Password: "x", Timeout: 2 * time.Second})
+	um, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	m = um.(Model)
+	m.screen = screenSession
+	return m
+}
+
+func TestStaleExecResultIgnored(t *testing.T) {
+	m := sessionModel(80, 24)
+	m.connSeq = 5
+	m.pending = 1
+	um, _ := m.Update(execResultMsg{cmd: "list", out: "stale output", seq: 4})
+	m = um.(Model)
+	if m.pending != 0 {
+		t.Fatalf("stale result must still decrement pending, got %d", m.pending)
+	}
+	for _, l := range m.logs {
+		if strings.Contains(l, "stale output") {
+			t.Fatal("stale exec result must not be logged")
+		}
+	}
+}
+
+func TestExecResultRenderedForCurrentSession(t *testing.T) {
+	m := sessionModel(80, 24)
+	m.connSeq = 7
+	m.pending = 1
+	um, _ := m.Update(execResultMsg{cmd: "list", out: "players: 3 online", seq: 7})
+	m = um.(Model)
+	found := false
+	for _, l := range m.logs {
+		if strings.Contains(l, "players: 3 online") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("current-session exec result must be rendered, logs:\n%v", m.logs)
+	}
+	if m.pending != 0 {
+		t.Fatalf("expected pending to be decremented, got %d", m.pending)
+	}
+}
+
+func TestDisconnectResetsPendingAndEpoch(t *testing.T) {
+	m := sessionModel(80, 24)
+	m.pending = 3
+	old := m.connSeq
+	um, _ := m.updateSession(keyMsg("ctrl+d"))
+	m = um.(Model)
+	if m.pending != 0 {
+		t.Fatalf("disconnect must clear pending, got %d", m.pending)
+	}
+	if m.connSeq != old+1 {
+		t.Fatalf("disconnect must bump session epoch, got %d want %d", m.connSeq, old+1)
+	}
+	if m.screen != screenConnect {
+		t.Fatal("expected to return to the connect screen")
+	}
+}
+
 // --- helpers ---
 
 type testErr struct{}

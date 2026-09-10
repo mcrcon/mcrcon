@@ -51,6 +51,7 @@ type execResultMsg struct {
 	out string
 	err error
 	dur time.Duration
+	seq int // connection/session epoch; stale results (older session) are ignored
 }
 
 // Model is the root Bubble Tea model.
@@ -200,11 +201,11 @@ func connectCmd(cfg Config, seq int) tea.Cmd {
 	}
 }
 
-func execCmd(c *rcon.Client, cmd string) tea.Cmd {
+func execCmd(c *rcon.Client, cmd string, seq int) tea.Cmd {
 	return func() tea.Msg {
 		start := time.Now()
 		out, err := c.Execute(cmd)
-		return execResultMsg{cmd: cmd, out: out, err: err, dur: time.Since(start)}
+		return execResultMsg{cmd: cmd, out: out, err: err, dur: time.Since(start), seq: seq}
 	}
 }
 
@@ -289,6 +290,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case execResultMsg:
 		if m.pending > 0 {
 			m.pending--
+		}
+		if msg.seq != m.connSeq {
+			// Result from a previous connection/session (user reconnected,
+			// switched servers, or disconnected). Keep the counter accurate
+			// but ignore the stale response entirely.
+			return m, nil
 		}
 		if msg.err != nil {
 			m.pushLog(StyleError.Render(fmt.Sprintf("Error (%s): %s", msg.dur.Round(time.Millisecond), cleanText(msg.err.Error()))))
@@ -445,6 +452,7 @@ func (m Model) submitConnect() (tea.Model, tea.Cmd) {
 	m.connErr = ""
 	m.connecting = true
 	m.connected = false
+	m.pending = 0
 	m.connSeq++
 	if m.client != nil {
 		m.client.Close()
@@ -487,13 +495,16 @@ func (m Model) updateSession(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+r":
 		return m.reconnect()
 	case "ctrl+d":
-		// Back to the connect form (disconnect).
+		// Back to the connect form (disconnect). Bump the session epoch so
+		// in-flight command results from the old connection are ignored.
 		if m.client != nil {
 			m.client.Close()
 			m.client = nil
 		}
 		m.connected = false
 		m.connecting = false
+		m.pending = 0
+		m.connSeq++
 		m.screen = screenConnect
 		m.focusIdx = 0
 		for i := range m.inputs {
@@ -628,7 +639,7 @@ func (m Model) sendCommand(cmdStr string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.pending++
-	return m, execCmd(m.client, cmdStr)
+	return m, execCmd(m.client, cmdStr, m.connSeq)
 }
 
 // doLocal processes slash-commands. Returns updated model + (quit, handled, cmd).
@@ -684,6 +695,7 @@ func (m Model) reconnect() (tea.Model, tea.Cmd) {
 	}
 	m.connected = false
 	m.connecting = true
+	m.pending = 0
 	m.connSeq++
 	m.pushLog(StyleSystem.Render(fmt.Sprintf("Reconnecting to %s:%d…", m.cfg.Host, m.cfg.Port)))
 	m.vp.GotoBottom()
