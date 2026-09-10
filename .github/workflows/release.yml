@@ -37,4 +37,9 @@ jobs:
           version: "~> v2"
           args: release --clean
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # NOTE: if the org enforces read-only GITHUB_TOKEN for workflows,
+          # create a PAT (classic `repo` scope, or fine-grained with
+          # Contents: read+write on this repo) and store it as the
+          # RELEASE_TOKEN repo secret. Falls back to GITHUB_TOKEN where
+          # workflow write access is allowed.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN != '' && secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
