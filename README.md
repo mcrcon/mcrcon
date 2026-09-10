@@ -53,8 +53,9 @@ echo "list" | mcrcon -H 127.0.0.1 -p secret --no-tui
   appears instead of yanking your view.
 - ⚡ **Status pill** showing `CONNECTED` / `CONNECTING` / `OFFLINE`, plus
   last-command latency and in-flight request count.
-- 🧹 **Clean output** — Minecraft `§` color codes and ANSI escapes are
-  stripped automatically in the TUI.
+- 🎨 **True Minecraft colors** — `§aHello` renders in green, `§l` bold, etc.
+  Colors show in the TUI and on TTYs; piped/script output stays plain text
+  (override with `--color always|never`, honors `NO_COLOR`).
 - 🔌 **Pure-Go RCON client** — thread-safe auth + exec with multi-packet
   reassembly for large responses such as `help`.
 - 🧩 **Three modes in one binary** — TUI, one-shot (classic `mcrcon` style),
@@ -145,6 +146,7 @@ mcrcon -H <host> -P <port> -p <password> [command...]
 | `-P`, `--port` | `25575` | RCON port (`MCRCON_PORT`) |
 | `-p`, `--password` | — | RCON password (`MCRCON_PASSWORD`, `RCON_PASSWORD`) |
 | `--timeout` | `8` | Connection & command timeout, in seconds |
+| `--color` | `auto` | Minecraft colors: `auto` (TTY only), `always`, `never` |
 | `-t`, `--tui` | — | Force TUI mode |
 | `--no-tui` | — | Force plain mode (no TUI) |
 | `-h`, `--help` | — | Print help |
@@ -205,7 +207,7 @@ mcrcon -H 127.0.0.1 -p secret --no-tui   # simple REPL, exit with Ctrl-D
 
 | Source | Variables |
 | --- | --- |
-| Flags | `-H`, `-P`, `-p`, `--timeout` (highest precedence) |
+| Flags | `-H`, `-P`, `-p`, `--timeout`, `--color` (highest precedence) |
 | Environment | `MCRCON_HOST` (`RCON_HOST`, `MINECRAFT_HOST` also work), `MCRCON_PORT` (`RCON_PORT`), `MCRCON_PASSWORD` (`RCON_PASSWORD`, `MCRCON_PASS`) |
 | Files | Command history: `~/.config/mcrcon/history` (or `~/.mcrcon_history` as fallback) |
 
@@ -306,7 +308,7 @@ make release-check   # goreleaser check
 | `Connection refused` | `enable-rcon=false`, wrong port, firewall rule, or server offline |
 | `Timed out` | Host unreachable or port filtered — try `--timeout 15` |
 | `(ok, … — no output)` | Normal — e.g. `save-all` genuinely returns little output |
-| Weird `§a` characters | Stripped automatically in the TUI; one-shot mode prints what the server sends |
+| Weird `§a` characters | Rendered as colors on TTY/TUI; use `--color never` for plain text |
 
 ## FAQ
 

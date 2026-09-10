@@ -30,14 +30,15 @@ var version = "dev"
 
 func main() {
 	var (
-		host     string
-		port     int
-		password string
-		timeoutS int
-		forceTUI bool
-		noTUI    bool
-		showVer  bool
-		showHelp bool
+		host      string
+		port      int
+		password  string
+		timeoutS  int
+		colorMode string
+		forceTUI  bool
+		noTUI     bool
+		showVer   bool
+		showHelp  bool
 	)
 
 	// Short flags (classic mcrcon style) + long flags.
@@ -48,6 +49,7 @@ func main() {
 	flag.StringVar(&password, "p", "", "RCON password (env MCRCON_PASSWORD)")
 	flag.StringVar(&password, "password", "", "RCON password (env MCRCON_PASSWORD)")
 	flag.IntVar(&timeoutS, "timeout", 8, "connection & command timeout in seconds")
+	flag.StringVar(&colorMode, "color", "auto", "Minecraft color output: auto, always, never")
 	flag.BoolVar(&forceTUI, "t", false, "force interactive TUI mode")
 	flag.BoolVar(&forceTUI, "tui", false, "force interactive TUI mode")
 	flag.BoolVar(&noTUI, "no-tui", false, "disable the TUI (plain/pipe mode)")
@@ -88,6 +90,12 @@ func main() {
 	if timeout <= 0 {
 		timeout = 8 * time.Second
 	}
+	switch colorMode {
+	case "auto", "always", "never":
+	default:
+		fatal("invalid --color %q: use auto, always, or never", colorMode)
+	}
+	color := useColor(colorMode)
 
 	args := flag.Args()
 
@@ -110,6 +118,7 @@ func main() {
 		if err != nil {
 			fatal("command failed: %v", err)
 		}
+		out = renderOutput(out, color)
 		fmt.Print(out)
 		if out != "" && !strings.HasSuffix(out, "\n") {
 			fmt.Println()
@@ -120,7 +129,7 @@ func main() {
 	// --- no command args: TUI vs plain ---
 	useTUI := forceTUI || (!noTUI && isTTY(os.Stdin) && isTTY(os.Stdout))
 	if !useTUI {
-		runPlain(host, port, password, timeout)
+		runPlain(host, port, password, timeout, color)
 		return
 	}
 
@@ -138,7 +147,7 @@ func main() {
 
 // runPlain is a dumb-terminal REPL: read lines from stdin, exec, print.
 // Used for pipes/scripts and when no TTY is available.
-func runPlain(host string, port int, password string, timeout time.Duration) {
+func runPlain(host string, port int, password string, timeout time.Duration, color bool) {
 	if host == "" {
 		fatal("missing host: use -H <host> or env MCRCON_HOST")
 	}
@@ -187,7 +196,7 @@ func runPlain(host string, port int, password string, timeout time.Duration) {
 			continue
 		}
 		if out != "" {
-			fmt.Println(out)
+			fmt.Println(renderOutput(out, color))
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -214,6 +223,29 @@ func isTTY(f *os.File) bool {
 	return isatty.IsTerminal(f.Fd()) || isatty.IsCygwinTerminal(f.Fd())
 }
 
+// useColor resolves --color=auto|always|never. Auto mode emits ANSI colors
+// only when stdout is a TTY, and honors the NO_COLOR convention.
+func useColor(mode string) bool {
+	switch mode {
+	case "always":
+		return true
+	case "never":
+		return false
+	default: // auto
+		return isTTY(os.Stdout) && os.Getenv("NO_COLOR") == ""
+	}
+}
+
+// renderOutput formats server output: Minecraft §-codes become ANSI colors
+// when color is on, otherwise everything is stripped to plain text (safe
+// for pipes, logs, and scripts).
+func renderOutput(out string, color bool) string {
+	if color {
+		return rcon.ToANSI(out)
+	}
+	return rcon.StripColors(out)
+}
+
 func fatal(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "mcrcon: "+format+"\n", a...)
 	os.Exit(1)
@@ -232,6 +264,8 @@ Options:
   -P, --port <port>       RCON port (env MCRCON_PORT) [default 25575]
   -p, --password <pass>   RCON password (env MCRCON_PASSWORD / RCON_PASSWORD)
       --timeout <secs>    connection & command timeout [default 8]
+      --color <mode>      Minecraft colors: auto, always, never [default auto]
+                          (auto = colored on TTY, plain when piped; honors NO_COLOR)
   -t, --tui               force TUI mode
       --no-tui            force plain mode (no TUI)
   -h, --help              print this help

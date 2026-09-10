@@ -145,6 +145,17 @@ func TestStripColors(t *testing.T) {
 	}
 }
 
+func TestFormatOutputRendersColors(t *testing.T) {
+	got := formatOutput("§aHello §cWorld")
+	want := "\x1b[0m\x1b[92mHello \x1b[0m\x1b[91mWorld\x1b[0m"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	if got := formatOutput("plain"); got != "plain" {
+		t.Fatalf("plain must pass through, got %q", got)
+	}
+}
+
 func TestStaleConnectIgnored(t *testing.T) {
 	m := New(Config{})
 	m.connSeq = 2

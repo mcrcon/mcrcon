@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -101,11 +100,6 @@ var commonCommands = []string{
 	"title", "tp", "tps", "trigger", "ver", "version", "weather", "whitelist",
 	"worldborder", "xp",
 }
-
-var (
-	mcColorRe = regexp.MustCompile(`(?i)§[0-9a-fk-or]`)
-	ansiRe    = regexp.MustCompile("\x1b\\[[0-9;]*m")
-)
 
 // New creates the TUI model. If host+password are set it starts on the
 // session screen and auto-connects; otherwise it shows the connect form.
@@ -304,11 +298,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		} else {
 			m.lastPing = msg.dur
-			body := cleanText(msg.out)
-			if strings.TrimSpace(body) == "" {
+			if strings.TrimSpace(rcon.StripColors(msg.out)) == "" {
 				m.pushLog(StyleSystem.Render(fmt.Sprintf("(ok, %s — no output)", msg.dur.Round(time.Millisecond))))
 			} else {
-				for _, line := range strings.Split(body, "\n") {
+				for _, line := range strings.Split(formatOutput(msg.out), "\n") {
 					m.pushLog(StyleResponse.Render(line))
 				}
 				m.pushLog(StyleSystem.Render(fmt.Sprintf("— %s", msg.dur.Round(time.Millisecond))))
@@ -1019,11 +1012,21 @@ func friendlyConnError(err error) string {
 	}
 }
 
-// cleanText strips Minecraft §-codes and ANSI escapes, trims trailing spaces
-// per line but preserves intentional blank lines.
+// cleanText strips Minecraft §-codes and ANSI escapes for contexts where
+// styling is unwanted (error messages), and normalizes line endings.
 func cleanText(s string) string {
-	s = mcColorRe.ReplaceAllString(s, "")
-	s = ansiRe.ReplaceAllString(s, "")
+	return trimLines(rcon.StripColors(s))
+}
+
+// formatOutput prepares server output for the log: line endings normalized,
+// trailing whitespace trimmed, Minecraft §-codes rendered as ANSI colors.
+func formatOutput(s string) string {
+	return rcon.ToANSI(trimLines(s))
+}
+
+// trimLines normalizes CRLF and trims trailing spaces per line while
+// preserving intentional blank lines.
+func trimLines(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	lines := strings.Split(s, "\n")
 	for i, l := range lines {
