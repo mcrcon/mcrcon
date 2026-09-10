@@ -114,6 +114,34 @@ go install github.com/mcrcon/mcrcon@latest
 Prebuilt binaries for Linux, macOS, and Windows (amd64/arm64) are
 attached to every [GitHub release](https://github.com/mcrcon/mcrcon/releases).
 
+### One-line install
+
+Linux / macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mcrcon/mcrcon/main/install.sh | sh
+```
+
+Installs to `/usr/local/bin` as root, or `$HOME/.local/bin` otherwise.
+Pin a version or change the location:
+
+```sh
+sh install.sh --version v1.3.0
+sh install.sh --bin-dir "$HOME/bin"
+MCRCON_VERSION=v1.3.0 sh install.sh
+```
+
+The script downloads the matching OS/arch archive from GitHub Releases,
+verifies it against `checksums.txt`, and prints a hint if the target
+directory is not on your `PATH`. See `sh install.sh --help`.
+
+Windows (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercontent.com/mcrcon/mcrcon/main/install.ps1 | iex"
+# or: ./install.ps1 -Version v1.3.0 -InstallDir "$HOME\bin"
+```
+
 No runtime dependencies — the result is a single static binary that runs on
 Linux, macOS, and Windows.
 
