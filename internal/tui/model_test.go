@@ -1,0 +1,186 @@
+package tui
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+func TestConnectViewRenders(t *testing.T) {
+	m := New(Config{})
+	m.width = 80
+	m.height = 24
+	out := m.View()
+	if !strings.Contains(out, "mcrcon") {
+		t.Fatalf("expected view to mention mcrcon, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Connect") {
+		t.Fatalf("expected connect view, got:\n%s", out)
+	}
+}
+
+func TestSessionViewRendersAfterResize(t *testing.T) {
+	m := New(Config{Host: "127.0.0.1", Port: 25575, Password: "x", Timeout: 2 * time.Second})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	out := m.View()
+	if !strings.Contains(out, "127.0.0.1") {
+		t.Fatalf("expected session view to show host, got:\n%s", out)
+	}
+	// Help overlay must not panic.
+	m.showHelp = true
+	if out := m.View(); !strings.Contains(out, "Local commands") {
+		t.Fatalf("expected help overlay, got:\n%s", out)
+	}
+}
+
+func TestLocalCommands(t *testing.T) {
+	m := New(Config{Host: "h", Port: 1, Password: "p"})
+	m.width = 80
+	m.height = 24
+	um, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = um.(Model)
+
+	nm, quit, handled, _ := m.doLocal("/help")
+	if quit || !handled {
+		t.Fatal("expected /help to be handled")
+	}
+	m = nm
+	if len(m.logs) == 0 {
+		t.Fatal("expected /help to log lines")
+	}
+
+	if _, quit, _, _ := m.doLocal("/quit"); !quit {
+		t.Fatal("expected /quit to quit")
+	}
+	if _, _, handled, _ := m.doLocal("/list"); handled {
+		t.Fatal("expected /list to fall through to server")
+	}
+}
+
+func TestQuestionMarkTypesWhenInputNonEmpty(t *testing.T) {
+	m := New(Config{Host: "h", Port: 1, Password: "p"})
+	um, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = um.(Model)
+	// Force session screen for the test.
+	m.screen = screenSession
+	m.ti.SetValue("wh")
+	um2, _ := m.updateSession(keyMsg("?"))
+	m = um2.(Model)
+	if m.showHelp {
+		t.Fatal("expected '?' to be typed, not open help, when input is non-empty")
+	}
+	if !strings.Contains(m.ti.Value(), "?") {
+		t.Fatalf("expected '?' in input, got %q", m.ti.Value())
+	}
+}
+
+func TestQuestionMarkTogglesHelpWhenInputEmpty(t *testing.T) {
+	m := New(Config{Host: "h", Port: 1, Password: "p"})
+	um, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = um.(Model)
+	m.screen = screenSession
+	m.ti.SetValue("")
+	um2, _ := m.updateSession(keyMsg("?"))
+	m = um2.(Model)
+	if !m.showHelp {
+		t.Fatal("expected '?' to open help when input is empty")
+	}
+}
+
+func TestSmartFollowKeepsPosition(t *testing.T) {
+	m := New(Config{Host: "h", Port: 1, Password: "p"})
+	um, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = um.(Model)
+	m.screen = screenSession
+	// Fill with content and scroll up.
+	for i := 0; i < 50; i++ {
+		m.pushLog("line")
+	}
+	m.vp.GotoBottom()
+	m.follow = true
+	m.vp.PageUp()
+	m.syncFollow()
+	if m.follow {
+		t.Fatal("expected follow=false after scrolling up")
+	}
+	n := m.newLines
+	m.pushLog("fresh")
+	m.stickToBottom()
+	if m.newLines != n+1 {
+		t.Fatalf("expected unseen counter to grow, got %d", m.newLines)
+	}
+	um2, _ := m.updateSession(keyMsg("end"))
+	m = um2.(Model)
+	if !m.follow || m.newLines != 0 {
+		t.Fatal("expected 'end' to resume following")
+	}
+}
+
+func TestSuggestions(t *testing.T) {
+	m := New(Config{})
+	m.ti.SetValue("li")
+	matches := m.suggestions()
+	found := false
+	for _, s := range matches {
+		if s == "list" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'list' in suggestions, got %v", matches)
+	}
+	m.ti.SetValue("list engineered")
+	if got := m.suggestions(); got != nil {
+		t.Fatalf("expected no suggestions for multi-word input, got %v", got)
+	}
+}
+
+func TestStripColors(t *testing.T) {
+	in := "§aHello §cWorld\x1b[31m!"
+	if got := cleanText(in); got != "Hello World!" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestStaleConnectIgnored(t *testing.T) {
+	m := New(Config{})
+	m.connSeq = 2
+	m.screen = screenConnect
+	um, _ := m.Update(connectErrMsg{err: errTest, seq: 1})
+	m = um.(Model)
+	if m.connErr != "" {
+		t.Fatal("expected stale connect error to be ignored")
+	}
+}
+
+// --- helpers ---
+
+type testErr struct{}
+
+func (testErr) Error() string { return "boom" }
+
+var errTest = testErr{}
+
+func keyMsg(s string) tea.KeyMsg {
+	// Build a KeyMsg the same way Bubble Tea does for printable runes.
+	var k tea.KeyMsg
+	switch s {
+	case "?", "q":
+		k = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+	default:
+		k = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+		// Map well-known names back to special keys.
+		if special, ok := map[string]tea.KeyType{
+			"enter": tea.KeyEnter, "esc": tea.KeyEsc, "tab": tea.KeyTab,
+			"up": tea.KeyUp, "down": tea.KeyDown, "pgup": tea.KeyPgUp,
+			"pgdown": tea.KeyPgDown, "home": tea.KeyHome, "end": tea.KeyEnd,
+			"f1": tea.KeyF1,
+		}[s]; ok {
+			k = tea.KeyMsg{Type: special}
+		}
+	}
+	return k
+}

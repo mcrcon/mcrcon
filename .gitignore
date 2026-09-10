@@ -1,0 +1,12 @@
+mcrcon
+mcrcon-test
+mcrcon.exe
+*.test
+coverage.out
+dist/
+bin/
+/tmp/
+.idea/
+.vscode/
+*.swp
+.DS_Store

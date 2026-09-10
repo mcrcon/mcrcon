@@ -1,0 +1,51 @@
+# GoReleaser v2 configuration: `goreleaser check` to validate,
+# `goreleaser release --snapshot --clean` for a local dry run.
+version: 2
+
+project_name: mcrcon
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: mcrcon
+    main: .
+    binary: mcrcon
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: default
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
