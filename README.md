@@ -45,6 +45,14 @@ echo "list" | mcrcon -H 127.0.0.1 -p secret --no-tui
 - 🖥️ **Fullscreen TUI** (alt-screen, mouse-wheel scrolling) with a connect
   form and a live session console. The last host/port you connected to is
   remembered and pre-filled next time (password is never stored).
+- 🌗 **Adaptive theming** — light/dark palette auto-selected from your
+  terminal background (`MCRCON_THEME=auto|dark|light`), 24-bit color, and a
+  gradient brand.
+- 📊 **Server sidebar** (wide terminals) — connection status dot, a live
+  latency **sparkline**, in-flight command count, session stats, and your
+  recent commands at a glance; it collapses automatically on narrow windows.
+- 🪟 **Floating help modal** — the keymap panel overlays the dimmed console
+  instead of replacing it.
 - ⌨️ **Command history** (`↑`/`↓`, `ctrl+p`/`ctrl+n`), persisted across
   restarts at `~/.config/mcrcon/history`.
 - 🔍 **Tab-completion** for common Vanilla / Paper / Spigot commands with a
@@ -245,6 +253,13 @@ The header always shows where you are connected and how healthy the link
 is. The input border mirrors the state: **green** connected,
 **yellow** connecting, **red** offline.
 
+Theme: the color palette adapts to your terminal background
+(`MCRCON_THEME=auto|dark|light`, default `auto`). On terminals wide enough,
+a **server sidebar** appears next to the log with the live latency
+sparkline, in-flight commands, recent history, and session stats — it
+auto-hides on narrow windows. `F1` opens the keymap as a floating modal
+over the (dimmed) console.
+
 Local commands (typed in the console, start with `/`):
 
 | Command | Effect |
@@ -282,7 +297,7 @@ printf 'save-all\nrestart\n' | mcrcon -H 127.0.0.1 -p secret --no-tui --batch
 | Source | Variables |
 | --- | --- |
 | Flags | `-H`, `-P`, `-p`, `--timeout`, `-F`, `--batch`, `--fail-on-error`, `--color` (highest precedence) |
-| Environment | `MCRCON_HOST` (`RCON_HOST`, `MINECRAFT_HOST` also work), `MCRCON_PORT` (`RCON_PORT`), `MCRCON_PASSWORD` (`RCON_PASSWORD`, `MCRCON_PASS`) |
+| Environment | `MCRCON_HOST` (`RCON_HOST`, `MINECRAFT_HOST` also work), `MCRCON_PORT` (`RCON_PORT`), `MCRCON_PASSWORD` (`RCON_PASSWORD`, `MCRCON_PASS`), `MCRCON_THEME` (`auto`/`dark`/`light`, TUI only) |
 | Files | Command history: `~/.config/mcrcon/history` (or `~/.mcrcon_history` as fallback) · last host/port: `~/.config/mcrcon/conn.json` |
 
 ## Recipes

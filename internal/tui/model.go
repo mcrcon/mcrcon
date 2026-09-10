@@ -95,7 +95,21 @@ type Model struct {
 	// Smart scroll: follow output unless the user scrolled up.
 	follow   bool
 	newLines int
+
+	// Modern sidebar (wide terminals) + session statistics.
+	sidebarW int
+	cmdCount int
+	errCount int
+	pings    []float64 // recent command latencies in ms, for the sparkline
 }
+
+// minSidebarWidth and friends decide when the host/server sidebar is shown.
+const (
+	minSidebarWidth = 116 // terminal columns required to enable the sidebar
+	maxSidebarWidth = 32
+	sidebarGap      = 2
+	maxTrackedPings = 32
+)
 
 // Common Minecraft / Paper / Spigot commands for Tab-completion.
 var commonCommands = []string{
@@ -170,7 +184,7 @@ func New(cfg Config) Model {
 	ti.Focus()
 
 	sp := spinner.New()
-	sp.Spinner = spinner.Dot
+	sp.Spinner = spinner.MiniDot
 	sp.Style = lipgloss.NewStyle().Foreground(ColorWarning)
 
 	m := Model{
@@ -276,6 +290,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.screen = screenSession
 		m.follow = true
 		m.newLines = 0
+		m.cmdCount = 0
+		m.errCount = 0
+		m.pings = nil
 		m.ti.Focus()
 		m.pushLog(StyleSystem.Render(fmt.Sprintf("Connected to %s:%d", m.cfg.Host, m.cfg.Port)))
 		m.pushLog(StyleSystem.Render(`Type "/help" for local commands • F1 for keybindings`))
@@ -319,7 +336,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// but ignore the stale response entirely.
 			return m, nil
 		}
+		m.cmdCount++
 		if msg.err != nil {
+			m.errCount++
 			m.pushLog(StyleError.Render(fmt.Sprintf("Error (%s): %s", msg.dur.Round(time.Millisecond), cleanText(msg.err.Error()))))
 			if isConnError(msg.err) {
 				m.connected = false
@@ -327,6 +346,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		} else {
 			m.lastPing = msg.dur
+			m.pings = append(m.pings, float64(msg.dur.Microseconds())/1000.0)
+			if len(m.pings) > maxTrackedPings {
+				m.pings = m.pings[len(m.pings)-maxTrackedPings:]
+			}
 			if strings.TrimSpace(rcon.StripColors(msg.out)) == "" {
 				m.pushLog(StyleSystem.Render(fmt.Sprintf("(ok, %s — no output)", msg.dur.Round(time.Millisecond))))
 			} else {
@@ -797,7 +820,7 @@ func (m Model) View() string {
 
 func (m Model) viewConnect() string {
 	var b strings.Builder
-	b.WriteString(StyleHeader.Render("  mcrcon — Connect to server  ") + "\n\n")
+	b.WriteString(StyleHeader.Render("  "+styleBrand+" — Connect to server  ") + "\n\n")
 	b.WriteString(StyleSystem.Render("Enter your RCON details  (Tab to move, Enter to continue)") + "\n\n")
 	for i := range m.inputs {
 		style := StyleInputBlurred
@@ -833,12 +856,23 @@ func (m Model) viewSession() string {
 	// The suggestion row appears/disappears while typing, so keep the log
 	// pane height in sync with it (m is a copy; vp scroll offset survives).
 	sug := m.suggestionLine()
-	m.vp.Height = m.viewportHeight(sug != "")
+	vh := m.viewportHeight(sug != "")
+	m.vp.Height = vh
 
 	var middle string
-	if m.showHelp {
-		middle = m.helpOverlay()
-	} else {
+	switch {
+	case m.showHelp:
+		// Modern modal: the live log is dimmed behind a floating panel.
+		m.vp.Style = lipgloss.NewStyle().Faint(true)
+		middle = m.helpModal(vh)
+	case m.sidebarW > 0:
+		middle = lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			m.sidebar(),
+			strings.Repeat(" ", sidebarGap),
+			m.vp.View(),
+		)
+	default:
 		middle = m.vp.View()
 	}
 
@@ -855,7 +889,7 @@ func (m Model) viewSession() string {
 // headerLine renders the status bar without nesting pre-styled strings
 // inside another style (which would corrupt widths/colors).
 func (m Model) headerLine() string {
-	left := StyleHeader.Render(fmt.Sprintf("  mcrcon  │  %s:%d  ", m.cfg.Host, m.cfg.Port))
+	left := StyleHeader.Render("  " + styleBrand + "  │  " + m.cfg.Host + ":" + strconv.Itoa(m.cfg.Port) + "  ")
 
 	var pill string
 	switch {
@@ -934,10 +968,49 @@ func (m Model) footerLine() string {
 	return StyleFooter.Render(hints)
 }
 
-func (m Model) helpOverlay() string {
-	var b strings.Builder
-	b.WriteString(StyleHelpTitle.Render("mcrcon help") + "\n\n")
-	keys := [][2]string{
+// helpModal overlays a floating help panel onto the dimmed log content so
+// the session stays visible underneath (row-by-row overlay; ANSI-safe).
+func (m Model) helpModal(vh int) string {
+	avail := m.width - 2
+	if avail < 24 {
+		return m.vp.View()
+	}
+	bg := m.vp.View()
+	bgLines := splitNoTrailing(bg)
+	if len(bgLines) > vh {
+		bgLines = bgLines[:vh]
+	}
+	boxed := StyleBox.Render(m.helpBody(max(avail-4, 4)))
+	modalLines := splitNoTrailing(boxed)
+	if len(modalLines) > vh {
+		modalLines = modalLines[:vh]
+	}
+	top := (vh - len(modalLines)) / 2
+	if top < 0 {
+		top = 0
+	}
+	for i := 0; i < len(modalLines); i++ {
+		if row := top + i; row >= 0 && row < len(bgLines) {
+			bgLines[row] = modalLines[i]
+		}
+	}
+	return strings.Join(bgLines, "\n")
+}
+
+// helpBody renders the help panel rows, each padded to inner width so the
+// surrounding border produces a fixed overall width.
+func (m Model) helpBody(inner int) string {
+	var rows []string
+	row := func(s string, pad bool) {
+		if pad {
+			s = padVisible(s, inner)
+		}
+		rows = append(rows, s)
+	}
+
+	row(StyleHelpTitle.Render("mcrcon help"), true)
+	row("", true)
+	for _, k := range [][2]string{
 		{"enter", "send command"},
 		{"up / down", "command history (also ctrl+p / ctrl+n)"},
 		{"tab", "complete command"},
@@ -950,17 +1023,90 @@ func (m Model) helpOverlay() string {
 		{"ctrl+d", "disconnect → server screen"},
 		{"ctrl+c", "quit"},
 		{"F1", "toggle this panel (? works when input is empty)"},
+	} {
+		row(fmt.Sprintf("  %s  %s", StyleHelpKey.Render(fmt.Sprintf("%-16s", k[0])), k[1]), true)
 	}
-	for _, k := range keys {
-		b.WriteString(fmt.Sprintf("  %s  %s\n", StyleHelpKey.Render(fmt.Sprintf("%-16s", k[0])), k[1]))
-	}
-	b.WriteString("\n")
-	b.WriteString(StyleHelpTitle.Render("Local commands") + "\n")
+	row("", true)
+	row(StyleHelpTitle.Render("Local commands"), true)
 	for _, l := range localHelpLines() {
-		b.WriteString("  " + l + "\n")
+		row("  "+l, true)
 	}
-	b.WriteString("\n" + StyleFooter.Render("press esc / F1 to close — typing still works underneath"))
-	return StyleBox.Render(b.String())
+	row("", true)
+	row(StyleFooter.Render("press esc / F1 to close — the console stays live underneath"), true)
+	return strings.Join(rows, "\n")
+}
+
+// sidebar renders the server panel shown on wide terminals: connection
+// details, a live latency sparkline, recent commands, and session stats.
+func (m Model) sidebar() string {
+	inner := m.sidebarW - 4
+	if inner < 1 {
+		inner = 1
+	}
+	vh := m.viewportHeight(m.suggestions() != nil)
+	contentH := max(vh-2, 1)
+	pad := func(s string) string { return padVisible(s, inner) }
+	sep := strings.Repeat("─", inner)
+	row := func(label, value string) string {
+		l := StyleSidebarLabel.Render(label)
+		return pad(l + StyleSidebarValue.Render(truncate(value, inner-visibleWidth(l))))
+	}
+
+	var lines []string
+	lines = append(lines, pad(StyleSidebarTitle.Render("SERVER")))
+	lines = append(lines, sep)
+	lines = append(lines, row("Host ", m.cfg.Host))
+	lines = append(lines, row("Port ", strconv.Itoa(m.cfg.Port)))
+
+	dot, status := StyleDisconnected.Render("●"), "Disconnected"
+	switch {
+	case m.connecting:
+		dot, status = StyleConnecting.Render(m.spinner.View()), "Connecting…"
+	case m.connected:
+		dot, status = StyleConnected.Render("●"), "Connected"
+	}
+	lines = append(lines, pad(dot+" "+StyleSidebarValue.Render(status)))
+
+	if m.connected {
+		pingLbl := StyleSidebarLabel.Render("Ping ")
+		var pingVal string
+		if len(m.pings) > 0 {
+			pingVal = StyleSidebarValue.Render(fmt.Sprintf(" %.0fms", m.pings[len(m.pings)-1]))
+		} else {
+			pingVal = StyleSidebarDim.Render(" —")
+		}
+		sparkW := inner - visibleWidth(pingLbl) - visibleWidth(pingVal)
+		lines = append(lines, pad(pingLbl+StyleSidebarDim.Render(sparkline(m.pings, max(sparkW, 1)))+pingVal))
+	}
+	if m.pending > 0 {
+		lines = append(lines, pad(StyleSidebarDim.Render(fmt.Sprintf("%s %d in flight", m.spinner.View(), m.pending))))
+	}
+
+	lines = append(lines, sep)
+	lines = append(lines, pad(StyleSidebarTitle.Render("RECENT")))
+	if cnt := min(len(m.history), 6); cnt == 0 {
+		lines = append(lines, pad(StyleSidebarDim.Render("— no commands yet")))
+	} else {
+		for i := len(m.history) - cnt; i < len(m.history); i++ {
+			lines = append(lines, pad(StyleSidebarDim.Render("· "+truncate(m.history[i], inner-2))))
+		}
+	}
+
+	lines = append(lines, sep)
+	lines = append(lines, pad(StyleSidebarDim.Render(fmt.Sprintf("sent %d · errors %d", m.cmdCount, m.errCount))))
+	if len(m.pings) > 0 {
+		sum := 0.0
+		for _, p := range m.pings {
+			sum += p
+		}
+		lines = append(lines, pad(StyleSidebarDim.Render(fmt.Sprintf("avg %.0fms · n=%d", sum/float64(len(m.pings)), len(m.pings)))))
+	}
+	lines = append(lines, pad(StyleSidebarLabel.Render("ctrl+d servers • F1 help")))
+
+	for len(lines) < contentH {
+		lines = append(lines, "")
+	}
+	return StyleSidebar.Render(strings.Join(lines, "\n"))
 }
 
 func localHelpLines() []string {
@@ -994,10 +1140,31 @@ func (m Model) viewportHeight(suggesting bool) int {
 
 func (m *Model) resizeViewport() {
 	vh := m.viewportHeight(m.suggestions() != nil)
-	vw := m.width - 4
+	avail := m.width - 2
+
+	// Enable the server sidebar only when both panes stay comfortably wide.
+	m.sidebarW = 0
+	if m.width >= minSidebarWidth {
+		w := avail / 5
+		if w > maxSidebarWidth {
+			w = maxSidebarWidth
+		}
+		if w < 20 {
+			w = 20
+		}
+		if avail-w-sidebarGap >= 50 {
+			m.sidebarW = w
+		}
+	}
+
+	vw := avail
+	if m.sidebarW > 0 {
+		vw = avail - m.sidebarW - sidebarGap
+	}
 	if vw < 10 {
 		vw = 10
 	}
+
 	wasNew := m.vp.Width == 0
 	if wasNew {
 		m.vp = viewport.New(vw, vh)
