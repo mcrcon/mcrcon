@@ -58,7 +58,9 @@ echo "list" | mcrcon -H 127.0.0.1 -p secret --no-tui
   (override with `--color always|never`, honors `NO_COLOR`).
 - 🔌 **Pure-Go RCON client** — thread-safe auth + exec with multi-packet
   reassembly for large responses such as `help`.
-- 🧩 **Three modes in one binary** — TUI, one-shot (classic `mcrcon` style),
+- 📋 **Batch ops** — run a list of commands from a file (`-F file`) with
+  `--batch` fail-fast and scripting-friendly exit codes (`0/1/2`).
+- 🧩 **Four modes in one binary** — TUI, one-shot (classic `mcrcon` style),
   and pipe-friendly plain mode for cron jobs and scripts.
 - 🩺 **Actionable errors** — wrong password, refused connection, and
   timeouts each explain what to check.
@@ -146,13 +148,20 @@ mcrcon -H <host> -P <port> -p <password> [command...]
 | `-P`, `--port` | `25575` | RCON port (`MCRCON_PORT`) |
 | `-p`, `--password` | — | RCON password (`MCRCON_PASSWORD`, `RCON_PASSWORD`) |
 | `--timeout` | `8` | Connection & command timeout, in seconds |
+| `-F`, `--command-file` | — | Run commands from a file, one per line |
+| `--batch` | — | Stop at the first failed command (fail-fast) |
+| `--fail-on-error` | — | Exit non-zero if any command failed (plain mode) |
 | `--color` | `auto` | Minecraft colors: `auto` (TTY only), `always`, `never` |
+| `--no-color` | — | Alias for `--color never` |
 | `-t`, `--tui` | — | Force TUI mode |
 | `--no-tui` | — | Force plain mode (no TUI) |
 | `-h`, `--help` | — | Print help |
 | `-v`, `--version` | — | Print version |
 
-Flag values take precedence over environment variables.
+Exit codes are part of the scripting contract: `0` success, `1` runtime
+error (connect/auth/command), `2` usage error (bad flags, missing args,
+unreadable command file). Flag values take precedence over environment
+variables.
 
 ### 1. One-shot mode
 
@@ -164,6 +173,34 @@ mcrcon -H 127.0.0.1 -P 25575 -p secret "list"
 mcrcon -H 127.0.0.1 -p secret say Hello from RCON
 MCRCON_HOST=mc.example.com MCRCON_PASSWORD=secret mcrcon "tps"
 ```
+
+### 2. Command-file / batch mode
+
+Run many commands from a file without retyping them — each non-empty,
+non-`#` line is one command, in order. A leading `/` is stripped.
+
+```sh
+mcrcon -H 127.0.0.1 -p secret -F ops.txt
+```
+
+```text
+# ops.txt — maintenance checklist
+save-off
+list
+say Maintenance in 5 minutes
+save-all
+```
+
+By default every command runs and failures are reported; the exit code is
+`1` if any of them failed, `0` otherwise. Add `--batch` to fail fast — stop
+at the first failing command and exit `1`, useful for `&&` chains in
+scripts:
+
+```sh
+mcrcon -H 127.0.0.1 -p secret --batch -F ops.txt && echo "all ok"
+```
+
+Command-file mode cannot be combined with a positional command argument.
 
 ### 2. TUI mode
 
@@ -203,11 +240,19 @@ printf 'time set day\nweather clear\n' | mcrcon -H 127.0.0.1 -p secret --no-tui
 mcrcon -H 127.0.0.1 -p secret --no-tui   # simple REPL, exit with Ctrl-D
 ```
 
+Plain mode exits `0` on EOF (Ctrl-D) even if a command failed, which keeps
+interactive sessions simple. For scripts add `--fail-on-error` to exit `1`
+when any command errored, or `--batch` to stop at the first failure:
+
+```sh
+printf 'save-all\nrestart\n' | mcrcon -H 127.0.0.1 -p secret --no-tui --batch
+```
+
 ## Configuration
 
 | Source | Variables |
 | --- | --- |
-| Flags | `-H`, `-P`, `-p`, `--timeout`, `--color` (highest precedence) |
+| Flags | `-H`, `-P`, `-p`, `--timeout`, `-F`, `--batch`, `--fail-on-error`, `--color` (highest precedence) |
 | Environment | `MCRCON_HOST` (`RCON_HOST`, `MINECRAFT_HOST` also work), `MCRCON_PORT` (`RCON_PORT`), `MCRCON_PASSWORD` (`RCON_PASSWORD`, `MCRCON_PASS`) |
 | Files | Command history: `~/.config/mcrcon/history` (or `~/.mcrcon_history` as fallback) |
 
@@ -232,6 +277,18 @@ Whitelist a player without opening the console:
 mcrcon -H mc.example.com -p "$MCRCON_PASSWORD" "whitelist add Steve"
 ```
 
+Run a maintenance checklist, stopping on the first problem:
+
+```sh
+mcrcon -H 127.0.0.1 -p "$MCRCON_PASSWORD" --batch -F /etc/mcrcon/maintenance.txt
+```
+
+Fail a whole cron job if any command in the batch failed:
+
+```sh
+30 3 * * * /usr/local/bin/mcrcon -H 127.0.0.1 -p "$MCRCON_PASSWORD" --batch -F /etc/mcrcon/backup.txt || /usr/local/bin/notify-ops "backup rcon failed"
+```
+
 ## Keybindings
 
 | Key | Action |
@@ -253,7 +310,7 @@ mcrcon -H mc.example.com -p "$MCRCON_PASSWORD" "whitelist add Steve"
 
 ```text
 .
-├── main.go               # CLI: flags and one-shot / TUI / plain dispatch
+├── main.go               # CLI: flags and one-shot / command-file / TUI / plain dispatch
 ├── internal/
 │   ├── rcon/             # RCON wire protocol + thread-safe client
 │   └── tui/              # Bubble Tea model (connect + session screens)
