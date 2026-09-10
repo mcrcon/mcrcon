@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -225,6 +228,311 @@ func TestDisconnectResetsPendingAndEpoch(t *testing.T) {
 	}
 	if m.screen != screenConnect {
 		t.Fatal("expected to return to the connect screen")
+	}
+}
+
+// --- connect form keymap ---
+
+func connectModel() Model {
+	m := New(Config{})
+	m.width = 80
+	m.height = 24
+	return m
+}
+
+func TestConnectTabCyclesFocus(t *testing.T) {
+	m := connectModel()
+	if m.focusIdx != 0 {
+		t.Fatalf("initial focus=%d want 0", m.focusIdx)
+	}
+	for _, want := range []int{1, 2, 0} {
+		um, _ := m.updateConnect(keyMsg("tab"))
+		m = um.(Model)
+		if m.focusIdx != want {
+			t.Fatalf("after tab focus=%d want %d", m.focusIdx, want)
+		}
+	}
+	for _, want := range []int{2, 1, 0} {
+		um, _ := m.updateConnect(keyMsg("shift+tab"))
+		m = um.(Model)
+		if m.focusIdx != want {
+			t.Fatalf("after shift+tab focus=%d want %d", m.focusIdx, want)
+		}
+	}
+}
+
+func TestConnectRejectsInvalidPort(t *testing.T) {
+	m := connectModel()
+	m.inputs[0].SetValue("mc.example.com")
+	m.inputs[1].SetValue("70000")
+	m.inputs[2].SetValue("secret")
+	m.focusIdx = 2
+	um, _ := m.updateConnect(keyMsg("enter"))
+	m = um.(Model)
+	if m.connErr == "" || !strings.Contains(m.connErr, "port") {
+		t.Fatalf("expected port error, got %q", m.connErr)
+	}
+	if m.focusIdx != 1 {
+		t.Fatalf("expected focus on port, got %d", m.focusIdx)
+	}
+	if m.connecting {
+		t.Fatal("invalid port must not start connecting")
+	}
+}
+
+func TestConnectRequiresPassword(t *testing.T) {
+	m := connectModel()
+	m.inputs[0].SetValue("mc.example.com")
+	m.inputs[1].SetValue("25575")
+	m.focusIdx = 2
+	um, _ := m.updateConnect(keyMsg("enter"))
+	m = um.(Model)
+	if !strings.Contains(m.connErr, "Password") {
+		t.Fatalf("expected password error, got %q", m.connErr)
+	}
+	if m.focusIdx != 2 {
+		t.Fatalf("expected focus on password, got %d", m.focusIdx)
+	}
+	if m.connecting {
+		t.Fatal("missing password must not start connecting")
+	}
+}
+
+func TestConnectSubmitStartsDial(t *testing.T) {
+	m := connectModel()
+	m.inputs[0].SetValue("mc.example.com")
+	m.inputs[1].SetValue("25575")
+	m.inputs[2].SetValue("secret")
+	m.focusIdx = 2
+	um, cmd := m.updateConnect(keyMsg("enter"))
+	m = um.(Model)
+	if !m.connecting {
+		t.Fatal("expected connecting to start")
+	}
+	if cmd == nil {
+		t.Fatal("expected a dial command")
+	}
+	if m.screen != screenConnect {
+		t.Fatal("connect form should stay until dial succeeds")
+	}
+}
+
+func TestConnectEscCancelsInFlightDial(t *testing.T) {
+	m := connectModel()
+	m.connecting = true
+	old := m.connSeq
+	um, _ := m.updateConnect(keyMsg("esc"))
+	m = um.(Model)
+	if m.connecting {
+		t.Fatal("esc must cancel a connecting dial")
+	}
+	if m.connSeq != old+1 {
+		t.Fatalf("esc must invalidate dial epoch, got %d want %d", m.connSeq, old+1)
+	}
+	if !strings.Contains(m.connErr, "cancelled") {
+		t.Fatalf("expected cancellation notice, got %q", m.connErr)
+	}
+}
+
+// --- local commands ---
+
+func TestLocalHistoryLogsEntries(t *testing.T) {
+	m := sessionModel(80, 24)
+	m.history = []string{"list", "time set day", "whitelist add Steve"}
+	um, quit, handled, _ := m.doLocal("/history")
+	m = um
+	if quit || !handled {
+		t.Fatal("expected /history to be handled, not quit")
+	}
+	found := false
+	for _, l := range m.logs {
+		if strings.Contains(l, "whitelist add Steve") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected /history to log commands, logs:\n%v", m.logs)
+	}
+}
+
+func TestLocalReconnectBumpsEpoch(t *testing.T) {
+	m := sessionModel(80, 24)
+	old := m.connSeq
+	um, quit, handled, cmd := m.doLocal("/reconnect")
+	m = um
+	if quit || !handled {
+		t.Fatal("expected /reconnect to be handled, not quit")
+	}
+	if cmd == nil {
+		t.Fatal("expected a reconnect command")
+	}
+	if m.connSeq != old+1 {
+		t.Fatalf("reconnect must bump epoch, got %d want %d", m.connSeq, old+1)
+	}
+	if !m.connecting {
+		t.Fatal("expected model to be connecting")
+	}
+}
+
+func TestLocalClearEmptiesLog(t *testing.T) {
+	m := sessionModel(80, 24)
+	for i := 0; i < 10; i++ {
+		m.pushLog("line")
+	}
+	if len(m.logs) < 2 {
+		t.Fatalf("expected logs to accumulate, got %d", len(m.logs))
+	}
+	um, quit, handled, _ := m.doLocal("/clear")
+	m = um
+	if quit || !handled {
+		t.Fatal("/clear must be handled")
+	}
+	// pushLog kept the "screen cleared" marker, so only that remains.
+	if len(m.logs) != 1 {
+		t.Fatalf("expected cleared marker only, got %d logs", len(m.logs))
+	}
+}
+
+// --- suggestions overflow ---
+
+func TestSuggestionLineShowsMoreForManyCandidates(t *testing.T) {
+	m := sessionModel(200, 40)
+	m.ti.SetValue("s")
+	line := m.suggestionLine()
+	if line == "" {
+		t.Fatal("expected suggestion line for prefix 's'")
+	}
+	if !strings.Contains(line, "+") || !strings.Contains(line, "more") {
+		t.Fatalf("expected '+N more' for many candidates, got %q", line)
+	}
+}
+
+func TestSuggestionLineEmptyWhenNoCandidates(t *testing.T) {
+	m := sessionModel(200, 40)
+	m.ti.SetValue("zzz")
+	if got := m.suggestionLine(); got != "" {
+		t.Fatalf("expected no suggestion line, got %q", got)
+	}
+	m.ti.SetValue("")
+	if got := m.suggestionLine(); got != "" {
+		t.Fatalf("expected no suggestion on empty input, got %q", got)
+	}
+}
+
+// --- auto-connect ---
+
+func TestInitAutoConnectsWithCredentials(t *testing.T) {
+	m := New(Config{Host: "h", Port: 1, Password: "p"})
+	if m.screen != screenSession {
+		t.Fatal("expected session screen when credentials are provided")
+	}
+	if cmd := m.Init(); cmd == nil {
+		t.Fatal("expected Init to return a dial command")
+	}
+	if !m.connecting {
+		t.Fatal("expected model to be connecting from startup")
+	}
+}
+
+func TestInitShowsFormWithoutCredentials(t *testing.T) {
+	m := New(Config{})
+	if m.screen != screenConnect {
+		t.Fatal("expected connect form when no credentials")
+	}
+	// Init still returns a blink so the cursor animates on the form.
+	if cmd := m.Init(); cmd == nil {
+		t.Fatal("expected Init to return a blink command")
+	}
+}
+
+// --- viewport pagination ---
+
+func TestSessionPaginationKeys(t *testing.T) {
+	m := sessionModel(80, 24)
+	for i := 0; i < 60; i++ {
+		m.pushLog("line")
+	}
+	m.vp.GotoBottom()
+	m.follow = true
+	um, _ := m.updateSession(keyMsg("pgup"))
+	m = um.(Model)
+	if m.follow {
+		t.Fatal("expected pgup to leave follow mode")
+	}
+	um, _ = m.updateSession(keyMsg("home"))
+	m = um.(Model)
+	if !m.vp.AtTop() {
+		t.Fatal("expected 'home' to jump to top")
+	}
+	um, _ = m.updateSession(keyMsg("end"))
+	m = um.(Model)
+	if !m.follow || !m.vp.AtBottom() {
+		t.Fatal("expected 'end' to jump to bottom and resume follow")
+	}
+}
+
+// --- history caps ---
+
+func TestHistoryCapIsUniform(t *testing.T) {
+	if maxInMemHistory != maxPersistedHistory {
+		t.Fatalf("history caps must match: mem=%d disk=%d", maxInMemHistory, maxPersistedHistory)
+	}
+	m := sessionModel(80, 24)
+	for i := 0; i < maxInMemHistory+50; i++ {
+		m.history = appendCmd(m.history, fmt.Sprintf("cmd %d", i))
+		if len(m.history) > maxInMemHistory {
+			m.history = m.history[len(m.history)-maxInMemHistory:]
+		}
+	}
+	if len(m.history) != maxInMemHistory {
+		t.Fatalf("expected in-memory history capped at %d, got %d", maxInMemHistory, len(m.history))
+	}
+}
+
+// --- last-connection persistence ---
+
+func TestSavedConnRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "conn.json")
+	saveConn(path, "mc.example.com", 25575)
+	sc := loadConn(path)
+	if sc.Host != "mc.example.com" || sc.Port != 25575 {
+		t.Fatalf("roundtrip failed: %+v", sc)
+	}
+}
+
+func TestLoadConnRejectsBadData(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "conn.json")
+	if sc := loadConn(path); sc.Host != "" {
+		t.Fatalf("missing file should yield empty, got %+v", sc)
+	}
+	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if sc := loadConn(path); sc.Host != "" {
+		t.Fatalf("invalid json should yield empty, got %+v", sc)
+	}
+	if err := os.WriteFile(path, []byte(`{"host":""}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if sc := loadConn(path); sc.Host != "" {
+		t.Fatalf("empty host should be rejected, got %+v", sc)
+	}
+}
+
+func TestNewPrefillsHostFromSavedConn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "conn.json")
+	saveConn(path, "persisted.example.com", 25577)
+	m := New(Config{ConnFile: path})
+	if got := m.inputs[0].Value(); got != "persisted.example.com" {
+		t.Fatalf("expected saved host prefill, got %q", got)
+	}
+	if got := m.inputs[1].Value(); got != "25577" {
+		t.Fatalf("expected saved port prefill, got %q", got)
+	}
+	// Explicit config must win over the saved file.
+	m2 := New(Config{ConnFile: path, Host: "flag.example.com"})
+	if got := m2.inputs[0].Value(); got != "flag.example.com" {
+		t.Fatalf("explicit host must win, got %q", got)
 	}
 }
 

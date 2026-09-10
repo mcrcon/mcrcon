@@ -43,7 +43,8 @@ echo "list" | mcrcon -H 127.0.0.1 -p secret --no-tui
 ## Highlights
 
 - 🖥️ **Fullscreen TUI** (alt-screen, mouse-wheel scrolling) with a connect
-  form and a live session console.
+  form and a live session console. The last host/port you connected to is
+  remembered and pre-filled next time (password is never stored).
 - ⌨️ **Command history** (`↑`/`↓`, `ctrl+p`/`ctrl+n`), persisted across
   restarts at `~/.config/mcrcon/history`.
 - 🔍 **Tab-completion** for common Vanilla / Paper / Spigot commands with a
@@ -254,7 +255,7 @@ printf 'save-all\nrestart\n' | mcrcon -H 127.0.0.1 -p secret --no-tui --batch
 | --- | --- |
 | Flags | `-H`, `-P`, `-p`, `--timeout`, `-F`, `--batch`, `--fail-on-error`, `--color` (highest precedence) |
 | Environment | `MCRCON_HOST` (`RCON_HOST`, `MINECRAFT_HOST` also work), `MCRCON_PORT` (`RCON_PORT`), `MCRCON_PASSWORD` (`RCON_PASSWORD`, `MCRCON_PASS`) |
-| Files | Command history: `~/.config/mcrcon/history` (or `~/.mcrcon_history` as fallback) |
+| Files | Command history: `~/.config/mcrcon/history` (or `~/.mcrcon_history` as fallback) · last host/port: `~/.config/mcrcon/conn.json` |
 
 ## Recipes
 

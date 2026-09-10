@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -26,6 +27,7 @@ type Config struct {
 	Password    string
 	Timeout     time.Duration
 	HistoryFile string
+	ConnFile    string // last host/port persistence ("" → default location)
 }
 
 // screen selects which view is active.
@@ -53,6 +55,13 @@ type execResultMsg struct {
 	dur time.Duration
 	seq int // connection/session epoch; stale results (older session) are ignored
 }
+
+// History caps are kept identical in-memory and on disk so the persisted
+// file can never grow unbounded.
+const (
+	maxInMemHistory     = 500
+	maxPersistedHistory = 500
+)
 
 // Model is the root Bubble Tea model.
 type Model struct {
@@ -105,6 +114,18 @@ var commonCommands = []string{
 // New creates the TUI model. If host+password are set it starts on the
 // session screen and auto-connects; otherwise it shows the connect form.
 func New(cfg Config) Model {
+	if cfg.ConnFile == "" {
+		cfg.ConnFile = defaultConnFile()
+	}
+	// Remember last used host/port (never the password).
+	if saved := loadConn(cfg.ConnFile); saved.Host != "" {
+		if cfg.Host == "" {
+			cfg.Host = saved.Host
+		}
+		if cfg.Port == 0 {
+			cfg.Port = saved.Port
+		}
+	}
 	if cfg.Port == 0 {
 		cfg.Port = 25575
 	}
@@ -259,6 +280,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pushLog(StyleSystem.Render(fmt.Sprintf("Connected to %s:%d", m.cfg.Host, m.cfg.Port)))
 		m.pushLog(StyleSystem.Render(`Type "/help" for local commands • F1 for keybindings`))
 		m.vp.GotoBottom()
+		saveConn(m.cfg.ConnFile, m.cfg.Host, m.cfg.Port)
 		return m, nil
 
 	case connectErrMsg:
@@ -628,8 +650,8 @@ func (m Model) sendCommand(cmdStr string) (tea.Model, tea.Cmd) {
 	m.newLines = 0
 	m.vp.GotoBottom()
 	m.history = appendCmd(m.history, cmdStr)
-	if len(m.history) > 1000 {
-		m.history = m.history[len(m.history)-1000:]
+	if len(m.history) > maxInMemHistory {
+		m.history = m.history[len(m.history)-maxInMemHistory:]
 	}
 	m.histIdx = len(m.history)
 	appendHistory(m.cfg.HistoryFile, cmdStr)
@@ -808,6 +830,11 @@ func (m Model) viewConnect() string {
 func (m Model) viewSession() string {
 	header := m.headerLine()
 
+	// The suggestion row appears/disappears while typing, so keep the log
+	// pane height in sync with it (m is a copy; vp scroll offset survives).
+	sug := m.suggestionLine()
+	m.vp.Height = m.viewportHeight(sug != "")
+
 	var middle string
 	if m.showHelp {
 		middle = m.helpOverlay()
@@ -816,7 +843,7 @@ func (m Model) viewSession() string {
 	}
 
 	var sb strings.Builder
-	if sug := m.suggestionLine(); sug != "" {
+	if sug != "" {
 		sb.WriteString(sug + "\n")
 	}
 	sb.WriteString(m.inputBoxStyle().Render(m.ti.View()))
@@ -951,12 +978,22 @@ func localHelpLines() []string {
 // Helpers
 // ---------------------------------------------------------------------------
 
-func (m *Model) resizeViewport() {
-	// header(1) + suggestion(0-1) + input(3) + footer(1) + margins
-	vh := m.height - 9
+// viewportHeight returns the log pane height for the current window. The
+// budget is header(1) + input(3) + footer(1) + 1 safety row; the suggestion
+// row (0-1) is reclaimed dynamically while it is visible.
+func (m Model) viewportHeight(suggesting bool) int {
+	vh := m.height - 6
+	if suggesting {
+		vh--
+	}
 	if vh < 3 {
 		vh = 3
 	}
+	return vh
+}
+
+func (m *Model) resizeViewport() {
+	vh := m.viewportHeight(m.suggestions() != nil)
 	vw := m.width - 4
 	if vw < 10 {
 		vw = 10
@@ -1098,6 +1135,56 @@ func defaultHistoryFile() string {
 	return ".mcrcon_history"
 }
 
+// --- last-connection persistence ---
+
+func defaultConnFile() string {
+	if dir, err := os.UserConfigDir(); err == nil {
+		return filepath.Join(dir, "mcrcon", "conn.json")
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".mcrcon_conn.json")
+	}
+	return ".mcrcon_conn.json"
+}
+
+// savedConn persists the last host/port so the TUI can pre-fill the form.
+// The password is intentionally never stored.
+type savedConn struct {
+	Host string `json:"host"`
+	Port int    `json:"port"`
+}
+
+func loadConn(path string) savedConn {
+	var sc savedConn
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return sc
+	}
+	if json.Unmarshal(data, &sc) != nil {
+		return savedConn{}
+	}
+	if sc.Host == "" || sc.Port < 1 || sc.Port > 65535 {
+		return savedConn{}
+	}
+	return sc
+}
+
+func saveConn(path, host string, port int) {
+	if host == "" || port < 1 || port > 65535 {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(path), 0o755)
+	data, err := json.MarshalIndent(savedConn{Host: host, Port: port}, "", "  ")
+	if err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, data, 0o600) != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
+}
+
 func loadHistory(path string) []string {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1111,23 +1198,38 @@ func loadHistory(path string) []string {
 		}
 		out = append(out, l)
 	}
-	if len(out) > 500 {
-		out = out[len(out)-500:]
+	if len(out) > maxPersistedHistory {
+		out = out[len(out)-maxPersistedHistory:]
 	}
 	return out
 }
 
+// appendHistory persists a command. Appending is cheap until the file would
+// exceed the cap; past that the file is rewritten trimmed to the latest
+// maxPersistedHistory lines so it can never grow unbounded.
 func appendHistory(path, cmd string) {
 	if path == "" || cmd == "" {
 		return
 	}
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
+	existing := loadHistory(path)
+	if len(existing) < maxPersistedHistory {
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		_, _ = f.WriteString(cmd + "\n")
 		return
 	}
-	defer f.Close()
-	_, _ = f.WriteString(cmd + "\n")
+	next := append(existing, cmd)
+	next = next[len(next)-maxPersistedHistory:]
+	data := []byte(strings.Join(next, "\n") + "\n")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
 }
 
 func (m *Model) shutdown() {
