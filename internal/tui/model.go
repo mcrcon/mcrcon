@@ -104,9 +104,13 @@ type Model struct {
 }
 
 // minSidebarWidth and friends decide when the host/server sidebar is shown.
+// The threshold (84 cols) covers phones in landscape and small laptops while
+// keeping portrait-sized windows single-pane.
 const (
-	minSidebarWidth = 116 // terminal columns required to enable the sidebar
+	minSidebarWidth = 84 // terminal columns required to enable the sidebar
 	maxSidebarWidth = 32
+	minSidebarW     = 18
+	minLogWidth     = 40
 	sidebarGap      = 2
 	maxTrackedPings = 32
 )
@@ -1149,10 +1153,10 @@ func (m *Model) resizeViewport() {
 		if w > maxSidebarWidth {
 			w = maxSidebarWidth
 		}
-		if w < 20 {
-			w = 20
+		if w < minSidebarW {
+			w = minSidebarW
 		}
-		if avail-w-sidebarGap >= 50 {
+		if avail-w-sidebarGap >= minLogWidth {
 			m.sidebarW = w
 		}
 	}

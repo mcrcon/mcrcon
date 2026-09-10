@@ -48,9 +48,10 @@ echo "list" | mcrcon -H 127.0.0.1 -p secret --no-tui
 - 🌗 **Adaptive theming** — light/dark palette auto-selected from your
   terminal background (`MCRCON_THEME=auto|dark|light`), 24-bit color, and a
   gradient brand.
-- 📊 **Server sidebar** (wide terminals) — connection status dot, a live
-  latency **sparkline**, in-flight command count, session stats, and your
-  recent commands at a glance; it collapses automatically on narrow windows.
+- 📊 **Server sidebar** (terminals with room — ≥ ~84 cols) — connection
+  status dot, a live latency **sparkline**, in-flight command count, session
+  stats, and your recent commands at a glance; it collapses automatically on
+  narrow (e.g. phone portrait) windows.
 - 🪟 **Floating help modal** — the keymap panel overlays the dimmed console
   instead of replacing it.
 - ⌨️ **Command history** (`↑`/`↓`, `ctrl+p`/`ctrl+n`), persisted across

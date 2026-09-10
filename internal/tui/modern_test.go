@@ -104,12 +104,19 @@ func TestSidebarShownOnWideTerminal(t *testing.T) {
 }
 
 func TestSidebarHiddenOnNarrowTerminal(t *testing.T) {
-	m := sessionModel(96, 30)
+	m := sessionModel(60, 30) // portrait phone width
 	if m.sidebarW != 0 {
 		t.Fatalf("sidebar must be hidden on narrow terminals, got width %d", m.sidebarW)
 	}
 	if out := m.View(); strings.Contains(out, "SERVER") {
 		t.Fatalf("sidebar content must not render when hidden:\n%s", out)
+	}
+}
+
+func TestSidebarShownOnModerateTerminal(t *testing.T) {
+	m := sessionModel(88, 30) // phone landscape / small laptop
+	if m.sidebarW <= 0 {
+		t.Fatalf("expected a compact sidebar at 88 columns, got %d", m.sidebarW)
 	}
 }
 
